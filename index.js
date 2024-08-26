@@ -1,40 +1,83 @@
-import { WebSocketServer } from 'ws';
+const express = require("express");
+const app = express();
+const cors = require("cors");
 
-const server = new WebSocketServer({port: 8080}, () => console.log('Server started'))
+const http = require("http").Server(app);
+const PORT = 4000;
+const socketIO = require("socket.io")(http, {
+  cors: "*",
+});
 
-const users = new Set();
+app.use(cors());
+let users = [];
 
-function sendMessage(message) {
-    users.forEach((user) => {
-        user.ws.send(JSON.stringify(message))
-    })
-}
+socketIO.on("connection", (socket) => {
+  const clientIP =
+    socket.handshake.address?.address ||
+    socket.request.connection.remoteAddress;
+  const isLocalhost = clientIP === "::1" || clientIP === "127.0.0.1";
 
-server.on('connection', (ws) => {
-    const userRef = {ws}
-    users.add(userRef)
-    ws.on('message', (message) => {
-        console.log(message);
-        try {
-            const data = JSON.parse(message);
-            if(typeof data.sender !== 'string' || typeof data.body !== 'string'){
-                console.error('Invalid message');
-                return
-            }
+  console.log(
+    `New client ${
+      isLocalhost ? "from localhost" : "connected from IP:"
+    } ${clientIP}`
+  );
 
-            const messageToSend = {
-                sender: data.sender,
-                body: data.body,
-                sendAt: Date.now()
-            }
+  socket.on("message", (data) => {
+    console.log("🚀: message", data);
+    const { ip, message } = data;
+    const user = users.find((user) => user.ipAddress === ip);
+    if (user) {
+      socketIO.to(user.socketID).emit("messageResponse", message);
+    }
+  });
 
-            sendMessage(messageToSend)
-        } catch(e) {
-            console.error('Error parsing message', e)
-        }
-    });
-    ws.on('close', (code, reason) => {
-        users.delete(userRef);
-        console.log(`Connection closed: ${code} ${reason}!`);
-    })
+  socket.on("typing", (data) => {
+    const { ip, user: typingUser } = data;
+    const user = users.find((user) => user.ipAddress === ip);
+    if (user) {
+      socket.to(user.socketID).emit("typingResponse", typingUser);
+    }
+  });
+
+  socket.on("newUser", (data) => {
+    console.log("🚀: newUser", data);
+    const { userName, ipAddress } = data;
+    users.push({ userName, socketID: socket.id, ipAddress });
+    socket.join(ipAddress);
+    socketIO.to(ipAddress).emit(
+      "newUserResponse",
+      users.filter((user) => user.ipAddress === ipAddress)
+    );
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔥: A user disconnected");
+    const user = users.find((user) => user.socketID === socket.id);
+    if (user) {
+      users = users.filter((user) => user.socketID !== socket.id);
+      socketIO.to(user.ipAddress).emit(
+        "newUserResponse",
+        users.filter((u) => u.ipAddress === user.ipAddress)
+      );
+    }
+    socket.disconnect();
+  });
+  console.log("🚀: users", users);
+});
+
+app.get("/api", (req, res) => {
+  res.json({ message: "Hello" });
+});
+
+app.get("/api/users", (req, res) => {
+  const { ip } = req.query;
+  console.log("🚀: ip", ip);
+  const usersByIp = users.filter((user) => user.ipAddress === ip);
+  console.log("🚀: usersByIp", users);
+  res.json(usersByIp);
+});
+
+http.listen(PORT, () => {
+  console.log(`Server listening on ${PORT}`);
 });
